@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12161c">
+<title>Tire Scanner</title>
+<style>
+:root{--bg:#12161c;--panel:#1b212a;--ink:#f3f5f8;--mute:#93a0b1;--line:#2c3541;--ok:#1fb860;--warn:#f0a020;--bad:#e5484d;--busy:#3b82f6;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:Roboto,"Segoe UI",system-ui,sans-serif}
+body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+#cam{position:relative;flex:1;min-height:0;overflow:hidden;background:#000}
+video{width:100%;height:100%;object-fit:cover}
+#frame{position:absolute;left:8%;right:8%;top:32%;height:36%;border:3px solid rgba(255,255,255,.85);border-radius:14px;box-shadow:0 0 0 100vmax rgba(0,0,0,.35);pointer-events:none}
+#banner{position:absolute;left:0;right:0;top:0;padding:18px 20px 16px;background:rgba(18,22,28,.82);transition:background-color .15s}
+#banner b{display:block;font-size:34px;line-height:1.1;font-weight:700;letter-spacing:.01em}
+#banner span{display:block;margin-top:4px;font-size:18px;color:#dfe5ec;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#banner.ok{background:var(--ok)}#banner.warn{background:var(--warn);color:#1a1200}#banner.warn span{color:#3a2a00}
+#banner.bad{background:var(--bad)}#banner.busy{background:var(--busy)}
+#start{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg)}
+#start button{font-size:22px;padding:18px 34px;border-radius:12px;border:0;background:var(--ok);color:#04210f;font-weight:700}
+#torch{position:absolute;right:14px;bottom:14px;padding:10px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.5);background:rgba(0,0,0,.5);color:#fff;font-size:15px;display:none}
+#panel{background:var(--panel);border-top:1px solid var(--line);padding:12px 14px 14px}
+#row{display:flex;gap:8px}
+input{flex:1;min-width:0;font-size:18px;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button.s{font-size:16px;padding:0 16px;border-radius:10px;border:1px solid var(--line);background:#252d38;color:var(--ink)}
+#meta{display:flex;justify-content:space-between;align-items:center;margin:10px 2px 6px;color:var(--mute);font-size:15px}
+#log{margin:0;padding:0;list-style:none;font-size:15px;color:var(--mute);max-height:5.2em;overflow:hidden}
+#log li{padding:2px 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#log .ok{color:#7be0a4}#log .warn{color:#f6c56a}#log .bad{color:#ff9a9d}
+#set{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;padding:20px}
+#set.open{display:flex}
+#set div{background:var(--panel);border-radius:14px;padding:18px;width:100%;max-width:420px}
+#set label{display:block;margin:12px 0 5px;color:var(--mute);font-size:14px}
+#set input{width:100%}
+#set .btns{display:flex;gap:8px;margin-top:16px}
+#set .btns button{flex:1;padding:12px}
+@media (prefers-reduced-motion:reduce){#banner{transition:none}}
+</style>
+</head>
+<body>
+<div id="cam">
+  <video id="v" playsinline muted></video>
+  <div id="frame"></div>
+  <div id="banner"><b id="bt">Ready</b><span id="bs">Point the camera at a barcode</span></div>
+  <button id="torch" type="button">Light</button>
+  <div id="start"><button id="go" type="button">Start scanning</button></div>
+</div>
+<div id="panel">
+  <div id="row">
+    <input id="man" inputmode="numeric" placeholder="Type an order ID" autocomplete="off">
+    <button class="s" id="send" type="button">Confirm</button>
+    <button class="s" id="gear" type="button">Settings</button>
+  </div>
+  <div id="meta"><span id="count">0 confirmed this session</span></div>
+  <ul id="log"></ul>
+</div>
+<div id="set"><div>
+  <strong>Connection</strong>
+  <label for="url">Web app URL from Apps Script</label>
+  <input id="url" placeholder="https://script.google.com/macros/s/.../exec">
+  <label for="sec">Secret (same as SECRET in the script)</label>
+  <input id="sec" placeholder="change-me">
+  <div class="btns"><button class="s" id="close" type="button">Cancel</button><button class="s" id="save" type="button" style="background:var(--ok);color:#04210f;font-weight:700">Save</button></div>
+</div></div>
+<script>
+const $ = id => document.getElementById(id);
+let cfg = { url: '', secret: '' };
+try { Object.assign(cfg, JSON.parse(localStorage.getItem('tirescan') || '{}')); } catch (e) {}
+
+let stream, detector, audio, count = 0, hideTimer, scanning = false;
+const recent = new Map();
+
+function beep(freq, ms) {
+  try {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = freq; g.gain.value = 0.15;
+    o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + ms / 1000);
+  } catch (e) {}
+}
+function buzz(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+
+function show(kind, title, sub, hold) {
+  const b = $('banner');
+  b.className = kind; $('bt').textContent = title; $('bs').textContent = sub || '';
+  clearTimeout(hideTimer);
+  if (kind !== 'busy') hideTimer = setTimeout(() => {
+    b.className = ''; $('bt').textContent = 'Ready'; $('bs').textContent = 'Point the camera at a barcode';
+  }, hold || 2200);
+}
+function log(kind, text) {
+  const li = document.createElement('li'); li.className = kind; li.textContent = text;
+  const ul = $('log'); ul.prepend(li); while (ul.children.length > 6) ul.lastChild.remove();
+}
+
+async function submit(raw) {
+  if (!cfg.url) { $('set').classList.add('open'); return; }
+  show('busy', 'Checking…', raw);
+  try {
+    const r = await fetch(cfg.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ code: raw, secret: cfg.secret })
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      count++; $('count').textContent = count + ' confirmed this session';
+      show('ok', 'Confirmed ' + d.code, d.name); buzz(60); beep(880, 120); log('ok', d.code + '  ' + d.name);
+    } else if (d.status === 'already') {
+      show('warn', 'Already confirmed', d.code + '  ' + d.name, 2800); buzz([80, 60, 80]); beep(520, 220); log('warn', d.code + '  already confirmed');
+    } else if (d.status === 'notfound') {
+      show('bad', 'Not in the sheet', d.code, 3000); buzz([200]); beep(220, 350); log('bad', d.code + '  not found');
+    } else if (d.status === 'bad') {
+      show('bad', 'No order ID in scan', d.code, 3000); buzz([200]); beep(220, 350); log('bad', 'unreadable: ' + d.code);
+    } else if (d.status === 'denied') {
+      show('bad', 'Wrong secret', 'Check Settings', 4000); beep(220, 350);
+    } else {
+      show('bad', 'Script error', d.message || '', 4000); beep(220, 350);
+    }
+  } catch (e) {
+    show('bad', 'Could not reach the sheet', 'Check signal and the URL in Settings', 4000); beep(220, 350);
+  }
+}
+
+function onCode(raw) {
+  raw = String(raw || '').trim(); if (!raw) return;
+  const now = Date.now();
+  if (recent.has(raw) && now - recent.get(raw) < 4000) return; // same barcode still in view
+  recent.set(raw, now);
+  submit(raw);
+}
+
+async function loop() {
+  if (!scanning) return;
+  const v = $('v');
+  if (v.readyState >= 2) {
+    try { const codes = await detector.detect(v); if (codes.length) onCode(codes[0].rawValue); } catch (e) {}
+  }
+  setTimeout(loop, 90);
+}
+
+async function start() {
+  audio = new (window.AudioContext || window.webkitAudioContext)();
+  if (!('BarcodeDetector' in window)) {
+    $('start').style.display = 'none';
+    show('bad', 'Browser not supported', 'Open this page in Chrome on Android', 600000); return;
+  }
+  try {
+    detector = new BarcodeDetector();
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
+    });
+  } catch (e) {
+    $('start').style.display = 'none';
+    show('bad', 'Camera blocked', 'Allow camera access for this site, then reload', 600000); return;
+  }
+  const v = $('v'); v.srcObject = stream; await v.play();
+  const t = stream.getVideoTracks()[0];
+  try { await t.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+  try {
+    if (t.getCapabilities().torch) {
+      const tb = $('torch'); tb.style.display = 'block'; let on = false;
+      tb.onclick = async () => { on = !on; try { await t.applyConstraints({ advanced: [{ torch: on }] }); } catch (e) {} };
+    }
+  } catch (e) {}
+  try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch (e) {}
+  $('start').style.display = 'none';
+  scanning = true; loop();
+  if (!cfg.url) $('set').classList.add('open');
+}
+
+$('go').onclick = start;
+$('send').onclick = () => { const v = $('man').value; $('man').value = ''; if (v.trim()) submit(v.trim()); };
+$('man').addEventListener('keydown', e => { if (e.key === 'Enter') $('send').click(); });
+$('gear').onclick = () => { $('url').value = cfg.url; $('sec').value = cfg.secret; $('set').classList.add('open'); };
+$('close').onclick = () => $('set').classList.remove('open');
+$('save').onclick = () => {
+  cfg.url = $('url').value.trim(); cfg.secret = $('sec').value.trim();
+  try { localStorage.setItem('tirescan', JSON.stringify(cfg)); } catch (e) {}
+  $('set').classList.remove('open');
+};
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch (e) {}
+});
+</script>
+</body>
+</html>
