@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14181f">
+<title>Tire Storage Scanner</title>
+<style>
+:root{--bg:#14181f;--panel:#1d232c;--ink:#f3f5f8;--mute:#98a3b3;--line:#2e3744;--ok:#1fb860;--warn:#f0a020;--bad:#e5484d;--busy:#3b82f6;--frame:#f0b43c;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:Roboto,"Segoe UI",system-ui,sans-serif}
+body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+#cam{position:relative;flex:1;min-height:0;overflow:hidden;background:#000}
+video,#shot{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#shot{display:none;z-index:1;background:#000}
+#cam[data-mode=review] #shot{display:block}
+#frame{position:absolute;left:8%;right:8%;top:32%;height:36%;border:3px solid var(--frame);border-radius:14px;box-shadow:0 0 0 100vmax rgba(0,0,0,.35);pointer-events:none}
+#cam:not([data-mode=scan]) #frame{display:none}
+#banner{position:absolute;left:0;right:0;top:0;z-index:3;padding:18px 20px 16px;background:rgba(20,24,31,.84);transition:background-color .15s}
+#banner b{display:block;font-size:32px;line-height:1.1;font-weight:700}
+#banner span{display:block;margin-top:4px;font-size:18px;color:#dfe5ec;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#banner.ok{background:var(--ok)}#banner.warn{background:var(--warn);color:#1a1200}#banner.warn span{color:#3a2a00}
+#banner.bad{background:var(--bad)}#banner.busy{background:var(--busy)}
+#ctrl{position:absolute;left:0;right:0;bottom:0;z-index:3;padding:18px 16px;display:none}
+#cam:not([data-mode=scan]) #ctrl{display:block}
+.grp{display:flex;align-items:center;justify-content:space-between;gap:14px}
+#cam[data-mode=frame] .g-review,#cam[data-mode=review] .g-frame{display:none}
+.pill{font-size:18px;padding:14px 22px;border-radius:999px;border:1px solid rgba(255,255,255,.55);background:rgba(0,0,0,.55);color:#fff}
+.pill.go{background:var(--ok);border-color:var(--ok);color:#04210f;font-weight:700;flex:1;max-width:260px}
+#shutter{width:80px;height:80px;border-radius:50%;border:5px solid #fff;background:rgba(255,255,255,.3)}
+#shutter:active{background:#fff}
+.spacer{width:96px}
+#torch{position:absolute;right:14px;top:112px;z-index:3;padding:10px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.5);background:rgba(0,0,0,.5);color:#fff;font-size:15px;display:none}
+#cam[data-mode=review] #torch{display:none!important}
+#start{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;background:var(--bg)}
+#start button{font-size:22px;padding:18px 34px;border-radius:12px;border:0;background:var(--ok);color:#04210f;font-weight:700}
+#panel{background:var(--panel);border-top:1px solid var(--line);padding:12px 14px 14px}
+#row{display:flex;gap:8px}
+input{flex:1;min-width:0;font-size:18px;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button.s{font-size:16px;padding:0 16px;border-radius:10px;border:1px solid var(--line);background:#272f3b;color:var(--ink)}
+#meta{display:flex;justify-content:space-between;align-items:center;margin:10px 2px 6px;color:var(--mute);font-size:15px}
+#pend{color:var(--warn)}
+#log{margin:0;padding:0;list-style:none;font-size:15px;color:var(--mute);max-height:4.4em;overflow:hidden}
+#log li{padding:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#log .ok{color:#7be0a4}
+#set{position:fixed;inset:0;z-index:9;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;padding:20px}
+#set.open{display:flex}
+#set>div{background:var(--panel);border-radius:14px;padding:18px;width:100%;max-width:420px}
+#set label{display:block;margin:12px 0 5px;color:var(--mute);font-size:14px}
+#set input{width:100%}
+#set .btns{display:flex;gap:8px;margin-top:16px}
+#set .btns button{flex:1;padding:12px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--frame);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){#banner{transition:none}}
+</style>
+</head>
+<body>
+<div id="cam" data-mode="scan">
+  <video id="v" playsinline muted></video>
+  <img id="shot" alt="Photo to check">
+  <div id="frame"></div>
+  <div id="banner"><b id="bt">Ready</b><span id="bs">Scan the barcode on the tire tag</span></div>
+  <button id="torch" type="button">Light</button>
+  <div id="ctrl">
+    <div class="grp g-frame">
+      <button class="pill" id="cancel" type="button">Cancel</button>
+      <button id="shutter" type="button" aria-label="Take photo"></button>
+      <span class="spacer"></span>
+    </div>
+    <div class="grp g-review">
+      <button class="pill" id="retake" type="button">Retake</button>
+      <button class="pill go" id="sendphoto" type="button">Save photo</button>
+    </div>
+  </div>
+  <div id="start"><button id="go" type="button">Start scanning</button></div>
+</div>
+<div id="panel">
+  <div id="row">
+    <input id="man" inputmode="numeric" placeholder="Or type an order ID" autocomplete="off">
+    <button class="s" id="manbtn" type="button">Photo</button>
+    <button class="s" id="gear" type="button">Settings</button>
+  </div>
+  <div id="meta"><span id="count">0 saved this session</span><span id="pend"></span></div>
+  <ul id="log"></ul>
+</div>
+<div id="set"><div>
+  <strong>Connection</strong>
+  <label for="url">Web app URL from Apps Script</label>
+  <input id="url" placeholder="https://script.google.com/macros/s/.../exec">
+  <label for="sec">Secret (same as SECRET in the script)</label>
+  <input id="sec" placeholder="change-me">
+  <div class="btns"><button class="s" id="close" type="button">Cancel</button><button class="s" id="save" type="button" style="background:var(--ok);color:#04210f;font-weight:700">Save</button></div>
+</div></div>
+<script>
+const $ = id => document.getElementById(id);
+const KEY = 'tirestorage', MAXW = 1280, QUALITY = 0.72;
+let cfg = { url: '', secret: '' };
+try { Object.assign(cfg, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) {}
+
+let stream, detector, audio, scanning = false, mode = 'scan', curCode = '', photoB64 = '', photoTs = 0;
+let hideTimer, saved = 0, pumping = false;
+const recent = new Map(), queue = [];
+const idOf = s => { const m = String(s).match(/\b\d{6}\b/); return m ? m[0] : s; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function beep(freq, ms) {
+  try {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = freq; g.gain.value = 0.15;
+    o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + ms / 1000);
+  } catch (e) {}
+}
+function buzz(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+
+function resetBanner() {
+  const b = $('banner'); b.className = '';
+  if (mode === 'scan') { $('bt').textContent = 'Ready'; $('bs').textContent = 'Scan the barcode on the tire tag'; }
+  else if (mode === 'frame') { b.className = 'busy'; $('bt').textContent = 'Scanned ' + idOf(curCode); $('bs').textContent = 'Frame the tires, then tap the shutter'; }
+  else { $('bt').textContent = 'Check the photo'; $('bs').textContent = 'Order ' + idOf(curCode); }
+}
+function setMode(m) { mode = m; $('cam').dataset.mode = m; clearTimeout(hideTimer); resetBanner(); }
+function show(kind, title, sub, hold) {
+  const b = $('banner'); b.className = kind; $('bt').textContent = title; $('bs').textContent = sub || '';
+  clearTimeout(hideTimer); hideTimer = setTimeout(resetBanner, hold || 2200);
+}
+function log(text) {
+  const li = document.createElement('li'); li.className = 'ok'; li.textContent = text;
+  const ul = $('log'); ul.prepend(li); while (ul.children.length > 5) ul.lastChild.remove();
+}
+function updatePending() {
+  $('pend').textContent = queue.length ? queue.length + ' waiting to upload' : '';
+  window.onbeforeunload = queue.length ? (e => { e.preventDefault(); e.returnValue = ''; }) : null;
+}
+
+function onCode(raw) {
+  if (mode !== 'scan') return;
+  raw = String(raw || '').trim(); if (!raw) return;
+  if (recent.has(raw) && Date.now() - recent.get(raw) < 10000) return; // same tag still in view
+  curCode = raw; buzz(40); beep(880, 100); setMode('frame');
+}
+
+$('shutter').onclick = () => {
+  const v = $('v'); if (!v.videoWidth) return;
+  const s = Math.min(1, MAXW / Math.max(v.videoWidth, v.videoHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  const url = c.toDataURL('image/jpeg', QUALITY);
+  photoB64 = url.split(',')[1]; photoTs = Date.now(); $('shot').src = url;
+  beep(1200, 60); buzz(30); setMode('review');
+};
+$('retake').onclick = () => setMode('frame');
+$('cancel').onclick = () => { recent.set(curCode, Date.now() - 7000); setMode('scan'); };
+$('sendphoto').onclick = () => {
+  queue.push({ code: curCode, ts: photoTs, photo: photoB64 });
+  recent.set(curCode, Date.now()); photoB64 = ''; $('shot').removeAttribute('src');
+  updatePending(); setMode('scan'); pump();
+};
+
+async function pump() {
+  if (!cfg.url) { $('set').classList.add('open'); return; }
+  if (pumping) return; pumping = true;
+  while (queue.length) {
+    const it = queue[0];
+    try {
+      const r = await fetch(cfg.url, {
+        method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ code: it.code, ts: it.ts, photo: it.photo, secret: cfg.secret })
+      });
+      const d = await r.json();
+      if (d.status === 'ok') {
+        queue.shift(); saved++; $('count').textContent = saved + ' saved this session';
+        log(d.id + '  photo saved');
+        if (mode === 'scan') show('ok', 'Saved ' + d.id, 'Photo and time logged'); else beep(660, 80);
+      } else {
+        show('bad', d.status === 'denied' ? 'Wrong secret' : 'Script error', d.message || 'Check Settings', 4000);
+        beep(220, 350); await sleep(8000);
+      }
+    } catch (e) {
+      show('bad', 'No signal', 'Will keep trying. Keep this page open.', 3000); await sleep(5000);
+    }
+    updatePending();
+  }
+  pumping = false;
+}
+
+async function loop() {
+  if (!scanning) return;
+  const v = $('v');
+  if (mode === 'scan' && v.readyState >= 2) {
+    try { const codes = await detector.detect(v); if (codes.length) onCode(codes[0].rawValue); } catch (e) {}
+  }
+  setTimeout(loop, 90);
+}
+
+async function start() {
+  audio = new (window.AudioContext || window.webkitAudioContext)();
+  if (!('BarcodeDetector' in window)) {
+    $('start').style.display = 'none';
+    show('bad', 'Browser not supported', 'Open this page in Chrome on Android', 600000); return;
+  }
+  try {
+    detector = new BarcodeDetector();
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
+    });
+  } catch (e) {
+    $('start').style.display = 'none';
+    show('bad', 'Camera blocked', 'Allow camera access for this site, then reload', 600000); return;
+  }
+  const v = $('v'); v.srcObject = stream; await v.play();
+  const t = stream.getVideoTracks()[0];
+  try { await t.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+  try {
+    if (t.getCapabilities().torch) {
+      const tb = $('torch'); tb.style.display = 'block'; let on = false;
+      tb.onclick = async () => { on = !on; try { await t.applyConstraints({ advanced: [{ torch: on }] }); } catch (e) {} };
+    }
+  } catch (e) {}
+  try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch (e) {}
+  $('start').style.display = 'none';
+  scanning = true; loop();
+  if (!cfg.url) $('set').classList.add('open');
+}
+
+$('go').onclick = start;
+$('manbtn').onclick = () => {
+  const v = $('man').value.trim(); if (!v || mode !== 'scan' || !scanning) return;
+  $('man').value = ''; curCode = v; setMode('frame');
+};
+$('man').addEventListener('keydown', e => { if (e.key === 'Enter') $('manbtn').click(); });
+$('gear').onclick = () => { $('url').value = cfg.url; $('sec').value = cfg.secret; $('set').classList.add('open'); };
+$('close').onclick = () => $('set').classList.remove('open');
+$('save').onclick = () => {
+  cfg.url = $('url').value.trim(); cfg.secret = $('sec').value.trim();
+  try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) {}
+  $('set').classList.remove('open'); if (queue.length) pump();
+};
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch (e) {}
+});
+</script>
+</body>
+</html>
